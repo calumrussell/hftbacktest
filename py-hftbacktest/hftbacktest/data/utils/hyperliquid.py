@@ -9,6 +9,7 @@ from hftbacktest.data.utils.difforderbooksnapshot import (
 )
 from ...types import (
     DEPTH_EVENT,
+    DEPTH_SNAPSHOT_EVENT,
     TRADE_EVENT,
     BUY_EVENT,
     SELL_EVENT,
@@ -19,6 +20,9 @@ from numpy.typing import NDArray
 
 def convert(
         input_filename: str,
+        tick_size: float,
+        lot_size: float,
+        num_levels: float,
         output_filename: Optional[str] = None,
         base_latency: float = 0,
         buffer_size: int = 100_000_000,
@@ -52,6 +56,8 @@ def convert(
     tmp = np.empty(buffer_size, event_dtype)
     row_num = 0
     timestamp_slice = 19
+    diff = DiffOrderBookSnapshot(num_levels, tick_size, lot_size)
+    took_first_snapshot = False
 
     with gzip.open(input_filename, 'r') as f:
         while True:
@@ -86,65 +92,89 @@ def convert(
                 bids = levels[0]
                 asks = levels[1]
 
-                diff = DiffOrderBookSnapshot(len(bids), 0.1, 0.00001)
-
                 bid_px = np.array([float(b["px"]) for b in bids])
                 bid_qty = np.array([float(b["sz"]) for b in bids])
                 ask_px = np.array([float(a["px"]) for a in asks])
                 ask_qty = np.array([float(a["sz"]) for a in asks])
+                
+                if not took_first_snapshot: 
+                    for (px, qty) in zip(bid_px, bid_qty):
+                        tmp[row_num] = (
+                            DEPTH_SNAPSHOT_EVENT | BUY_EVENT,
+                            exch_ts,
+                            float(local_ts),
+                            px,
+                            qty,
+                            0,
+                            0,
+                            0,
+                        )
+                        
+                    for (px, qty) in zip(ask_px, ask_qty):
+                        tmp[row_num] = (
+                            DEPTH_SNAPSHOT_EVENT | SELL_EVENT,
+                            exch_ts,
+                            float(local_ts),
+                            px,
+                            qty,
+                            0,
+                            0,
+                            0,
+                        )
+                    took_first_snapshot = True
+                else:
+                    bid, ask, bid_del, ask_del = diff.snapshot(bid_px, bid_qty, ask_px, ask_qty)
 
-                bid, ask, bid_del, ask_del = diff.snapshot(bid_px, bid_qty, ask_px, ask_qty)
-
-                for entry in bid:
-                    if entry[2] == INSERTED or entry[2] == CHANGED:
-                        tmp[row_num] = (
-                            DEPTH_EVENT | BUY_EVENT,
-                            exch_ts,
-                            float(local_ts),
-                            entry[0],
-                            entry[1],
-                            0,
-                            0,
-                            0
-                        )
-                        row_num += 1
-                for entry in ask:
-                    if entry[2] == INSERTED or entry[2] == CHANGED:
-                        tmp[row_num] = (
-                            DEPTH_EVENT | SELL_EVENT,
-                            exch_ts,
-                            float(local_ts),
-                            entry[0],
-                            entry[1],
-                            0,
-                            0,
-                            0
-                        )
-                        row_num += 1
-                for entry in bid_del:
-                        tmp[row_num] = (
-                            BUY_EVENT | DEPTH_EVENT,
-                            exch_ts,
-                            float(local_ts),
-                            entry[0],
-                            0,
-                            0,
-                            0,
-                            0
-                        )
-                        row_num += 1
-                for entry in ask_del:
-                        tmp[row_num] = (
-                            SELL_EVENT | DEPTH_EVENT,
-                            exch_ts,
-                            float(local_ts),
-                            entry[0],
-                            0,
-                            0,
-                            0,
-                            0
-                        )
-                        row_num += 1
+                    for entry in bid:
+                        if entry[2] == INSERTED or entry[2] == CHANGED:
+                            tmp[row_num] = (
+                                DEPTH_EVENT | BUY_EVENT,
+                                exch_ts,
+                                float(local_ts),
+                                entry[0],
+                                entry[1],
+                                0,
+                                0,
+                                0
+                            )
+                            row_num += 1
+                    for entry in ask:
+                        if entry[2] == INSERTED or entry[2] == CHANGED:
+                            tmp[row_num] = (
+                                DEPTH_EVENT | SELL_EVENT,
+                                exch_ts,
+                                float(local_ts),
+                                entry[0],
+                                entry[1],
+                                0,
+                                0,
+                                0
+                            )
+                            row_num += 1
+                    for entry in bid_del:
+                            tmp[row_num] = (
+                                BUY_EVENT | DEPTH_EVENT,
+                                exch_ts,
+                                float(local_ts),
+                                entry[0],
+                                0,
+                                0,
+                                0,
+                                0
+                            )
+                            row_num += 1
+                    for entry in ask_del:
+                            tmp[row_num] = (
+                                SELL_EVENT | DEPTH_EVENT,
+                                exch_ts,
+                                float(local_ts),
+                                entry[0],
+                                0,
+                                0,
+                                0,
+                                0
+                            )
+                            row_num += 1
 
     tmp = tmp[:row_num]
 
